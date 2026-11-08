@@ -6,9 +6,9 @@
 //! - `board.rs` owns the hardware: heap, clocks, USART3, the LED, and the user
 //!   button B1 as an owned input, plus the `PushButton` input that turns it
 //!   into `ButtonPress` records.
-//! - `main.rs` is the application: the records, and the one task that owns the
-//!   state machine, which is what serializes route admission, policy updates
-//!   and command generation.
+//! - `main.rs` is the application: the records and how they connect. One
+//!   `transform_join` owns the state machine and writes every result to
+//!   `leash.effects`; a transform on each output record picks out its own.
 
 extern crate alloc;
 
@@ -16,8 +16,8 @@ mod board;
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
-use aimdb_core::buffer::Reader;
 use aimdb_core::remote::SecurityPolicy;
+use aimdb_core::transform::{JoinEventRx, JoinTrigger};
 use aimdb_core::{AimDb, AimDbBuilder, Producer};
 use aimdb_embassy_adapter::io::EmbassyUart;
 use aimdb_embassy_adapter::{EmbassyAdapter, EmbassyBufferType, EmbassyRecordRegistrarExtCustom};
@@ -28,7 +28,7 @@ use contracts::{
 };
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either5, select5};
+use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
 use leash::{Effect, Event, Leash, rules};
 use static_cell::StaticCell;
@@ -39,8 +39,14 @@ use board::PushButton;
 /// Upper bound on how late a lost pose is noticed, beyond its staleness limit.
 const TICK_MS: u64 = 50;
 const DIAG_MS: u64 = 500;
+/// Internal to the board: not exposed over AimX.
+const EFFECTS: &str = "leash.effects";
+/// Room for several events' effects while the output transforms catch up.
+const EFFECT_SLOTS: usize = 32;
 
 static HANDLE_CYCLES_MAX: AtomicU32 = AtomicU32::new(0);
+/// Cycle counter at a policy change that is about to stop the turtle.
+static POLICY_AT: AtomicU32 = AtomicU32::new(0);
 static POLICY_TO_ZERO_CYCLES: AtomicU32 = AtomicU32::new(0);
 static PRESS_TO_ZERO_CYCLES: AtomicU32 = AtomicU32::new(0);
 
@@ -65,70 +71,98 @@ async fn diag_task(diag: Producer<BoardDiag>) {
     }
 }
 
-struct Inputs {
-    presses: Reader<ButtonPress>,
-    missions: Reader<Mission>,
-    proposals: Reader<RouteProposal>,
-    poses: Reader<Pose>,
-}
+/// Waits for the output transforms to subscribe, which they do when first
+/// run. Otherwise the initial policy and status would be published to nobody.
+const STARTUP_MS: u64 = 50;
 
-struct Outputs {
-    cmd_vel: Producer<Twist>,
-    decision: Producer<RouteDecision>,
-    status: Producer<Status>,
-    policy: Producer<Policy>,
-}
-
-impl Outputs {
-    fn apply(&self, effect: Effect) {
-        match effect {
-            Effect::Drive(twist) => self.cmd_vel.produce(twist),
-            Effect::Decision(decision) => self.decision.produce(decision),
-            Effect::Status(status) => self.status.produce(status),
-            Effect::Policy(policy) => self.policy.produce(policy),
-        }
+/// The record type of each join input, turned into the state machine's event.
+fn event_from(trigger: &JoinTrigger) -> Option<Event> {
+    if trigger.as_input::<ButtonPress>().is_some() {
+        Some(Event::ButtonPressed)
+    } else if let Some(mission) = trigger.as_input::<Mission>() {
+        Some(Event::Arm(*mission))
+    } else if let Some(proposal) = trigger.as_input::<RouteProposal>() {
+        Some(Event::Proposal(proposal.clone()))
+    } else {
+        trigger.as_input::<Pose>().map(|pose| Event::Pose(*pose))
     }
 }
 
-#[embassy_executor::task]
-async fn leash_task(mut leash: Leash, mut inputs: Inputs, outputs: Outputs) {
-    leash.start(now_ms(), &mut |effect| outputs.apply(effect));
+/// Owns the state machine, which is what serializes route admission, policy
+/// updates and command generation. Every result goes out as one `Effect`.
+async fn run_leash(mut triggers: JoinEventRx, effects: Producer<Effect>, map: WorldMap) {
+    let mut leash = Leash::new(map);
+    Timer::after(Duration::from_millis(STARTUP_MS)).await;
+    leash.start(now_ms(), &mut |effect| effects.produce(effect));
+
     loop {
-        // Polled in order: a press is consumed before the next pose.
-        let event = match select5(
-            inputs.presses.recv(),
-            inputs.missions.recv(),
-            inputs.proposals.recv(),
-            inputs.poses.recv(),
+        let event = match select(
+            triggers.recv(),
             Timer::after(Duration::from_millis(TICK_MS)),
         )
         .await
         {
-            Either5::First(Ok(_)) => Event::ButtonPressed,
-            Either5::Second(Ok(mission)) => Event::Arm(mission.value),
-            Either5::Third(Ok(proposal)) => Event::Proposal(proposal.value),
-            Either5::Fourth(Ok(pose)) => Event::Pose(pose.value),
-            Either5::Fifth(()) => Event::Tick,
-            _ => continue,
+            Either::First(Ok(trigger)) => match event_from(&trigger) {
+                Some(event) => event,
+                None => continue,
+            },
+            Either::First(Err(_)) => return,
+            Either::Second(()) => Event::Tick,
         };
 
         let started = board::cycles();
-        let measure_stop = event == Event::ButtonPressed;
-        let mut policy_at = None;
+        let is_press = event == Event::ButtonPressed;
+        let mut stopped = false;
         leash.handle(event, now_ms(), &mut |effect| {
-            let is_zero = matches!(&effect, Effect::Drive(t) if *t == Twist::default());
-            if matches!(effect, Effect::Policy(_)) {
-                policy_at = Some(board::cycles());
+            if is_press && matches!(effect, Effect::Policy(_)) {
+                POLICY_AT.store(board::cycles(), Relaxed);
             }
-            outputs.apply(effect);
-            if let (true, true, Some(policy_at)) = (measure_stop, is_zero, policy_at) {
-                let now = board::cycles();
-                POLICY_TO_ZERO_CYCLES.store(now.wrapping_sub(policy_at), Relaxed);
-                PRESS_TO_ZERO_CYCLES
-                    .store(now.wrapping_sub(board::PRESS_AT.load(Relaxed)), Relaxed);
-            }
+            stopped |= is_stop(&effect);
+            effects.produce(effect);
         });
+        if is_press && !stopped {
+            POLICY_AT.store(0, Relaxed);
+        }
         HANDLE_CYCLES_MAX.fetch_max(board::cycles().wrapping_sub(started), Relaxed);
+    }
+}
+
+fn is_stop(effect: &Effect) -> bool {
+    matches!(effect, Effect::Drive(twist) if *twist == Twist::default())
+}
+
+fn cmd_vel_from(effect: &Effect) -> Option<Twist> {
+    let Effect::Drive(twist) = effect else {
+        return None;
+    };
+    // The first zero after a policy change is what a press is timed against.
+    let policy_at = POLICY_AT.swap(0, Relaxed);
+    if policy_at != 0 && is_stop(effect) {
+        let now = board::cycles();
+        POLICY_TO_ZERO_CYCLES.store(now.wrapping_sub(policy_at), Relaxed);
+        PRESS_TO_ZERO_CYCLES.store(now.wrapping_sub(board::PRESS_AT.load(Relaxed)), Relaxed);
+    }
+    Some(*twist)
+}
+
+fn decision_from(effect: &Effect) -> Option<RouteDecision> {
+    match effect {
+        Effect::Decision(decision) => Some(*decision),
+        _ => None,
+    }
+}
+
+fn status_from(effect: &Effect) -> Option<Status> {
+    match effect {
+        Effect::Status(status) => Some(*status),
+        _ => None,
+    }
+}
+
+fn policy_from(effect: &Effect) -> Option<Policy> {
+    match effect {
+        Effect::Policy(policy) => Some(*policy),
+        _ => None,
     }
 }
 
@@ -157,10 +191,6 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
     });
-    builder.configure::<Twist>(keys::CMD_VEL, |reg| {
-        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
-            .with_remote_access();
-    });
     builder.configure::<Mission>(keys::MISSION, |reg| {
         reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
@@ -169,19 +199,7 @@ async fn main(spawner: Spawner) {
         reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
     });
-    builder.configure::<Policy>(keys::POLICY, |reg| {
-        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
-            .with_remote_access();
-    });
     builder.configure::<RouteProposal>(keys::ROUTE_PROPOSAL, |reg| {
-        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
-            .with_remote_access();
-    });
-    builder.configure::<RouteDecision>(keys::ROUTE_DECISION, |reg| {
-        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
-            .with_remote_access();
-    });
-    builder.configure::<Status>(keys::STATUS, |reg| {
         reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
             .with_remote_access();
     });
@@ -198,30 +216,53 @@ async fn main(spawner: Spawner) {
             .input(PushButton::on(b1));
     });
 
+    // The state machine: every input in, one stream of effects out.
+    let map = rules::map();
+    let leash_map = map.clone();
+    builder.configure::<Effect>(EFFECTS, |reg| {
+        reg.buffer_sized::<EFFECT_SLOTS, 4>(EmbassyBufferType::SpmcRing)
+            .transform_join(|join| {
+                join.input::<ButtonPress>(keys::BUTTON)
+                    .input::<Mission>(keys::MISSION)
+                    .input::<RouteProposal>(keys::ROUTE_PROPOSAL)
+                    .input::<Pose>(keys::POSE)
+                    .on_triggers(move |triggers, effects| run_leash(triggers, effects, leash_map))
+            });
+    });
+
+    // Each output record takes its own effects. Having a transform also makes
+    // AimDB refuse remote writes to it, whatever the policy says.
+    builder.configure::<Twist>(keys::CMD_VEL, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
+            .transform::<Effect, _>(EFFECTS, |t| t.map(cmd_vel_from));
+    });
+    builder.configure::<RouteDecision>(keys::ROUTE_DECISION, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
+            .transform::<Effect, _>(EFFECTS, |t| t.map(decision_from));
+    });
+    builder.configure::<Status>(keys::STATUS, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
+            .transform::<Effect, _>(EFFECTS, |t| t.map(status_from));
+    });
+    builder.configure::<Policy>(keys::POLICY, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access()
+            .transform::<Effect, _>(EFFECTS, |t| t.map(policy_from));
+    });
+
     static DB_CELL: StaticCell<AimDb> = StaticCell::new();
     let (db, db_runner) = builder.build().await.expect("Failed to build database");
     let db = DB_CELL.init(db);
 
-    let map = rules::map();
     db.producer::<WorldMap>(keys::WORLD_MAP)
         .expect("map")
-        .produce(map.clone());
+        .produce(map);
 
-    let inputs = Inputs {
-        presses: db.subscribe(keys::BUTTON).expect("presses"),
-        missions: db.subscribe(keys::MISSION).expect("missions"),
-        proposals: db.subscribe(keys::ROUTE_PROPOSAL).expect("proposals"),
-        poses: db.subscribe(keys::POSE).expect("poses"),
-    };
-    let outputs = Outputs {
-        cmd_vel: db.producer(keys::CMD_VEL).expect("cmd_vel"),
-        decision: db.producer(keys::ROUTE_DECISION).expect("decision"),
-        status: db.producer(keys::STATUS).expect("status"),
-        policy: db.producer(keys::POLICY).expect("policy"),
-    };
     let diag = db.producer(keys::BOARD_DIAG).expect("diag");
 
-    spawner.spawn(unwrap!(leash_task(Leash::new(map), inputs, outputs)));
     spawner.spawn(unwrap!(diag_task(diag)));
 
     info!("up");
