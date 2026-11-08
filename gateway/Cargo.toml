@@ -13,6 +13,8 @@ aimdb-data-contracts = { workspace = true, features = ["std", "ros2", "linkable-
 aimdb-serial-connector.workspace = true
 aimdb-tokio-adapter.workspace = true
 aimdb-uds-connector.workspace = true
+aimdb-websocket-connector.workspace = true
 aimdb-zenoh-connector.workspace = true
+axum = "0.8"
 contracts = { workspace = true, features = ["linkable", "ros2"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

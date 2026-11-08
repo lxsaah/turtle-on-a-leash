@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turtle on a Leash</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #1a2027; --line: #2d3640; --text: #e7ecf1; --dim: #8e9aa6;
+    --open: #4da3ff; --restricted: #ffb547; --ok: #49c98b; --bad: #ff6b6b;
+    --solid: #5a6673; --route: #d9e2ec;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; padding: 16px;
+  }
+  #stage { position: relative; min-height: 0; display: grid; place-items: center; }
+  canvas { background: var(--panel); border-radius: 8px; display: block; }
+  aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  section { background: var(--panel); border-radius: 8px; padding: 14px 16px; }
+  h1 { font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin: 0 0 6px; }
+  #policy { font-size: 34px; font-weight: 700; line-height: 1.1; }
+  #policy.open { color: var(--open); }
+  #policy.restricted { color: var(--restricted); }
+  .sub { color: var(--dim); font-size: 14px; }
+  #timer { font-size: 44px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  #state { font-size: 20px; font-weight: 600; }
+  #reason { color: var(--bad); font-size: 14px; min-height: 20px; }
+  #log-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #log { list-style: none; margin: 0; padding: 0; overflow-y: auto; font-size: 14px; }
+  #log li { padding: 3px 0; border-top: 1px solid var(--line); }
+  #log li:first-child { border-top: 0; }
+  .accepted { color: var(--ok); }
+  .rejected { color: var(--bad); }
+  #banner {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    background: var(--bad); color: #1a0d0d; font-weight: 700; padding: 6px 14px; border-radius: 6px;
+  }
+  #banner[hidden] { display: none; }
+  @media (max-width: 800px) {
+    body { grid-template-columns: minmax(0, 1fr); grid-auto-rows: min-content; height: auto; }
+    #stage { height: 80vw; }
+  }
+</style>
+</head>
+<body>
+  <main id="stage">
+    <canvas id="map" role="img" aria-label="Map of the delivery area with the turtle, its routes and its trail"></canvas>
+    <div id="banner" role="status" hidden></div>
+  </main>
+  <aside>
+    <section>
+      <h1>Policy</h1>
+      <div id="policy">–</div>
+      <div class="sub" id="policy-detail">&nbsp;</div>
+    </section>
+    <section>
+      <h1>Mission</h1>
+      <div id="timer">0.0 s</div>
+      <div id="state">–</div>
+      <div id="reason"></div>
+    </section>
+    <section id="log-section">
+      <h1>Board decisions</h1>
+      <ul id="log"></ul>
+    </section>
+  </aside>
+<script>
+"use strict";
+
+const WORLD_SIZE = 11; // turtlesim's arena
+const MAX_TRAIL = 8000;
+const MIN_TRAIL_STEP = 0.01;
+const RECONNECT_MS = 1000;
+const css = getComputedStyle(document.documentElement);
+const color = (name) => css.getPropertyValue(name).trim();
+const COLORS = {
+  panel: color("--panel"), line: color("--line"), text: color("--text"), dim: color("--dim"),
+  open: color("--open"), restricted: color("--restricted"), ok: color("--ok"), bad: color("--bad"),
+  solid: color("--solid"), route: color("--route"),
+};
+
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+const el = (id) => document.getElementById(id);
+
+let view = emptyView();
+
+function emptyView() {
+  return {
+    map: null, policy: null, mission: null, pose: null, status: null, statusAt: 0,
+    health: null, trail: [], routes: [], decisions: [],
+  };
+}
+
+function modeColor(mode) {
+  return mode === "restricted" ? COLORS.restricted : COLORS.open;
+}
+
+function clearMission() {
+  view.trail = [];
+  view.routes = [];
+  view.decisions = [];
+  renderLog();
+}
+
+// ---- incoming records ------------------------------------------------------
+
+const handlers = {
+  "world.map": (map) => { view.map = map; },
+  "motion.policy": (policy) => { view.policy = policy; renderPolicy(); },
+  "delivery.mission": (mission) => {
+    if (view.mission && view.mission.mission_id !== mission.mission_id) clearMission();
+    view.mission = mission;
+  },
+  "turtle.pose": (pose) => {
+    view.pose = pose;
+    const last = view.trail[view.trail.length - 1];
+    if (!last || Math.hypot(pose.x - last.x, pose.y - last.y) >= MIN_TRAIL_STEP) {
+      view.trail.push({ x: pose.x, y: pose.y, mode: view.policy ? view.policy.mode : "open" });
+      if (view.trail.length > MAX_TRAIL) view.trail.shift();
+    }
+  },
+  "delivery.route_proposal": (proposal) => {
+    if (view.routes.some((r) => r.mission_id === proposal.mission_id && r.seq === proposal.seq)) return;
+    const from = view.pose ? { x: view.pose.x, y: view.pose.y } : proposal.waypoints[0];
+    view.routes.push({ ...proposal, from, outcome: "pending" });
+  },
+  "delivery.route_decision": (decision) => {
+    if (view.decisions.some((d) => d.decision_no === decision.decision_no)) return;
+    view.decisions.unshift(decision);
+    renderLog();
+    const route = routeFor(decision.mission_id, decision.seq);
+    // A repeated proposal is refused under the same sequence; keep the first answer.
+    if (route && route.outcome === "pending") route.outcome = decision.accepted ? "accepted" : "rejected";
+  },
+  "delivery.status": (status) => {
+    const before = view.status;
+    if (before && before.mission_id !== status.mission_id) clearMission();
+    view.status = status;
+    view.statusAt = performance.now();
+    if (status.state === "awaiting_route") {
+      const route = routeFor(status.mission_id, status.route_seq);
+      if (route && route.outcome === "accepted") route.outcome = "invalidated";
+    }
+    renderStatus();
+  },
+  "link.health": (health) => { view.health = health; renderBanner(); },
+};
+
+function routeFor(missionId, seq) {
+  return view.routes.find((r) => r.mission_id === missionId && r.seq === seq);
+}
+
+// ---- side panel ------------------------------------------------------------
+
+function renderPolicy() {
+  const { mode, revision, speed_limit: speed, work_area_excluded: excluded } = view.policy;
+  const name = el("policy");
+  name.textContent = mode === "restricted" ? "Restricted" : "Open";
+  name.className = mode;
+  el("policy-detail").textContent =
+    `Limit ${speed.toFixed(1)} u/s · work area ${excluded ? "closed" : "open"} · rev ${revision}`;
+}
+
+const STATE_NAMES = {
+  idle: "Idle", armed: "Armed", executing: "Driving", awaiting_route: "Waiting for a route", reached: "Arrived",
+};
+
+function renderStatus() {
+  const { state, reason } = view.status;
+  el("state").textContent = STATE_NAMES[state] || state;
+  el("reason").textContent = reason ? reason.replaceAll("_", " ") : "";
+}
+
+function renderLog() {
+  const log = el("log");
+  log.replaceChildren(...view.decisions.map((d) => {
+    const item = document.createElement("li");
+    item.className = d.accepted ? "accepted" : "rejected";
+    const where = d.segment === null || d.segment === undefined ? "" : ` (segment ${d.segment})`;
+    item.textContent = d.accepted
+      ? `Route ${d.seq}: accepted`
+      : `Route ${d.seq}: ${String(d.reason).replaceAll("_", " ")}${where}`;
+    return item;
+  }));
+}
+
+function renderBanner() {
+  const banner = el("banner");
+  const offline = !socketOpen ? "Gateway offline" : view.health && !view.health.board_fresh ? "Board offline" : "";
+  banner.textContent = offline;
+  banner.hidden = !offline;
+}
+
+function renderTimer(now) {
+  const status = view.status;
+  if (!status) return;
+  const running = status.state === "armed" || status.state === "executing" || status.state === "awaiting_route";
+  const ms = status.elapsed_ms + (running ? now - view.statusAt : 0);
+  el("timer").textContent = `${(ms / 1000).toFixed(1)} s`;
+}
+
+// ---- map -------------------------------------------------------------------
+
+let scale = 1;
+const px = (x) => x * scale;
+const py = (y) => (WORLD_SIZE - y) * scale;
+
+function resize() {
+  const stage = el("stage").getBoundingClientRect();
+  const side = Math.floor(Math.min(stage.width, stage.height));
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = canvas.style.height = `${side}px`;
+  canvas.width = canvas.height = Math.floor(side * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  scale = side / WORLD_SIZE;
+}
+
+function rectPath(r) {
+  ctx.beginPath();
+  ctx.rect(px(r.x0), py(r.y1), px(r.x1) - px(r.x0), py(r.y0) - py(r.y1));
+}
+
+function inflate(r, c) {
+  return { x0: r.x0 - c, x1: r.x1 + c, y0: r.y0 - c, y1: r.y1 + c };
+}
+
+function label(text, x, y, fill) {
+  ctx.fillStyle = fill;
+  ctx.font = "600 13px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, px(x), py(y));
+}
+
+function drawMap() {
+  const { map, policy } = view;
+  if (!map) return;
+
+  rectPath(map.bounds);
+  ctx.strokeStyle = COLORS.line;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  ctx.stroke();
+
+  const area = map.work_area;
+  const closed = policy && policy.work_area_excluded;
+  rectPath(area);
+  ctx.fillStyle = closed ? "rgba(255, 107, 107, 0.28)" : "rgba(255, 181, 71, 0.13)";
+  ctx.fill();
+  if (closed) {
+    rectPath(inflate(area, policy.admission_clearance));
+    ctx.strokeStyle = COLORS.bad;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  label(closed ? "Work area: closed" : "Work area", (area.x0 + area.x1) / 2, (area.y0 + area.y1) / 2,
+        closed ? COLORS.bad : COLORS.restricted);
+
+  for (const solid of map.solid_obstacles) {
+    rectPath(solid);
+    ctx.fillStyle = COLORS.solid;
+    ctx.fill();
+  }
+}
+
+const ROUTE_STYLE = {
+  pending: () => ({ stroke: COLORS.dim, dash: [4, 6], width: 2 }),
+  accepted: () => ({ stroke: COLORS.route, dash: [], width: 2.5 }),
+  rejected: () => ({ stroke: COLORS.bad, dash: [3, 6], width: 1.5 }),
+  invalidated: () => ({ stroke: COLORS.bad, dash: [8, 6], width: 2 }),
+};
+
+function drawRoute(route) {
+  const style = ROUTE_STYLE[route.outcome]();
+  ctx.strokeStyle = style.stroke;
+  ctx.lineWidth = style.width;
+  ctx.setLineDash(style.dash);
+  ctx.beginPath();
+  ctx.moveTo(px(route.from.x), py(route.from.y));
+  for (const w of route.waypoints) ctx.lineTo(px(w.x), py(w.y));
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = style.stroke;
+  for (const w of route.waypoints) {
+    ctx.beginPath();
+    ctx.arc(px(w.x), py(w.y), 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawTrail() {
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (let i = 1; i < view.trail.length; i++) {
+    const [a, b] = [view.trail[i - 1], view.trail[i]];
+    // Teleports between missions would otherwise draw a line across the map.
+    if (Math.hypot(b.x - a.x, b.y - a.y) > 1) continue;
+    ctx.strokeStyle = modeColor(b.mode);
+    ctx.beginPath();
+    ctx.moveTo(px(a.x), py(a.y));
+    ctx.lineTo(px(b.x), py(b.y));
+    ctx.stroke();
+  }
+}
+
+function drawDestination() {
+  if (!view.mission) return;
+  const d = view.mission.destination;
+  ctx.strokeStyle = COLORS.ok;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(px(d.x), py(d.y), 13, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = COLORS.ok;
+  ctx.beginPath();
+  ctx.arc(px(d.x), py(d.y), 4, 0, Math.PI * 2);
+  ctx.fill();
+  label("Line 3", d.x, d.y - 0.55, COLORS.ok);
+}
+
+function drawNextWaypoint() {
+  const next = view.status && view.status.next_waypoint;
+  if (!next) return;
+  ctx.strokeStyle = COLORS.text;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(px(next.x), py(next.y), 8, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+function drawTurtle() {
+  const pose = view.pose;
+  if (!pose) return;
+  ctx.save();
+  ctx.translate(px(pose.x), py(pose.y));
+  ctx.rotate(-pose.theta);
+  ctx.fillStyle = COLORS.ok;
+  ctx.strokeStyle = COLORS.panel;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(14, 0);
+  ctx.lineTo(-10, 9);
+  ctx.lineTo(-6, 0);
+  ctx.lineTo(-10, -9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function frame(now) {
+  ctx.clearRect(0, 0, WORLD_SIZE * scale, WORLD_SIZE * scale);
+  drawMap();
+  view.routes.forEach(drawRoute);
+  drawTrail();
+  drawDestination();
+  drawNextWaypoint();
+  drawTurtle();
+  renderTimer(now);
+  requestAnimationFrame(frame);
+}
+
+// ---- connection ------------------------------------------------------------
+
+let socketOpen = false;
+
+async function connect() {
+  try {
+    const version = await (await fetch("/version")).json();
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${scheme}://${location.host}/ws?v=${version.aimx}`);
+    socket.onopen = () => {
+      view = emptyView();
+      renderLog();
+      socketOpen = true;
+      renderBanner();
+      socket.send(JSON.stringify({ t: "sub", id: 1, topic: "#" }));
+    };
+    socket.onmessage = (message) => {
+      const frame = JSON.parse(message.data);
+      if (frame.t !== "event" && frame.t !== "snap") return;
+      const handler = handlers[frame.topic];
+      if (handler) handler(frame.data);
+    };
+    socket.onclose = () => {
+      socketOpen = false;
+      renderBanner();
+      setTimeout(connect, RECONNECT_MS);
+    };
+  } catch {
+    socketOpen = false;
+    renderBanner();
+    setTimeout(connect, RECONNECT_MS);
+  }
+}
+
+window.addEventListener("resize", resize);
+resize();
+renderBanner();
+requestAnimationFrame(frame);
+connect();
+</script>
+</body>
+</html>
