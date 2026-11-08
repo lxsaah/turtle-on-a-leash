@@ -1,0 +1,18 @@
+[package]
+name = "gateway"
+version = "0.1.0"
+description = "Bridges ROS 2 and the board, and serves records to the agent"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aimdb-core.workspace = true
+aimdb-data-contracts = { workspace = true, features = ["std", "ros2", "linkable-json"] }
+aimdb-serial-connector.workspace = true
+aimdb-tokio-adapter.workspace = true
+aimdb-uds-connector.workspace = true
+aimdb-zenoh-connector.workspace = true
+contracts = { workspace = true, features = ["linkable", "ros2"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

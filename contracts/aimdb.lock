@@ -7,9 +7,24 @@ version = 1
 shape = "sha256:b188208979d84721a7223822d07f90cf47b88c713cf2574a36e9796a4bd8509e"
 
 [[contract]]
+name = "leash.board_diag"
+version = 1
+shape = "sha256:ad8bb8dc91747ca19b558a711bc7b488dfe64c7fb395e246865843d5a9897da5"
+
+[[contract]]
+name = "leash.button_press"
+version = 1
+shape = "sha256:0a2e953f92c7f5e78d036cde12c9ce2d418f42161ebc1a1c7ce18a79f48d0507"
+
+[[contract]]
 name = "leash.delivery_status"
 version = 1
 shape = "sha256:a399c06755228736e7ddbd11264b3775ca50c200f0e9ea283c4d0916c5cd1d9f"
+
+[[contract]]
+name = "leash.link_health"
+version = 1
+shape = "sha256:5e72bd2b56eee89844017e4e8f5f7721aea9e52fb0eb5be3d81cd2d6cf79a896"
 
 [[contract]]
 name = "leash.mission"

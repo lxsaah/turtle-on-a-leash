@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aimdb": {
+      "command": "aimdb-mcp",
+      "args": ["--connect", "unix:///tmp/aimdb-turtle.sock", "--allow-writes"]
+    }
+  }
+}
