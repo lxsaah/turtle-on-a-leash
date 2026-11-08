@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["contracts", "leash"]
+# Built for the MCU target with its own Embassy patches.
+exclude = ["firmware"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98.0"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Pinned to a revision of main: the board publishes world.map before the
+# gateway connects, so this needs the late-join snapshots that follow v3.0.0.
+aimdb-data-contracts = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", default-features = false }
+contracts = { path = "contracts" }
+micromath = "2.1"
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
