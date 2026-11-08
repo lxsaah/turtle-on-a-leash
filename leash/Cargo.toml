@@ -1,0 +1,12 @@
+[package]
+name = "leash"
+version = "0.1.0"
+description = "Route admission and mission execution, independent of AimDB and the board"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+contracts.workspace = true
+micromath.workspace = true
