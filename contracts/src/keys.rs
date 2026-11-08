@@ -9,3 +9,6 @@ pub const ROUTE_PROPOSAL: &str = "delivery.route_proposal";
 pub const ROUTE_DECISION: &str = "delivery.route_decision";
 pub const STATUS: &str = "delivery.status";
 pub const CMD_VEL: &str = "turtle.cmd_vel";
+pub const BUTTON: &str = "board.button.b1";
+pub const BOARD_DIAG: &str = "mcu.diag";
+pub const LINK_HEALTH: &str = "link.health";

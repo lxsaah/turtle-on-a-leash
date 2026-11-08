@@ -181,6 +181,37 @@ pub struct Status {
     pub elapsed_ms: u32,
 }
 
+/// `board.button.b1`: one debounced press of the blue button.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ButtonPress {
+    /// Counts presses since the board started.
+    pub press: u32,
+}
+
+/// `mcu.diag`: the board's health and timing. Its arrival is also how the
+/// gateway knows the board is alive.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BoardDiag {
+    pub uptime_ms: u64,
+    pub heap_used: u32,
+    pub heap_peak: u32,
+    pub presses: u32,
+    pub physical_presses: u32,
+    pub handle_cycles_max: u32,
+    pub policy_to_zero_cycles: u32,
+    pub press_to_zero_cycles: u32,
+}
+
+/// `link.health`: the gateway's view of the board. A reset board stops feeding
+/// the mirrored records, which then keep their last value, so readers need
+/// this to know whether they are still live.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LinkHealth {
+    pub board_fresh: bool,
+    pub ms_since_board: u64,
+    pub board_uptime_ms: u64,
+}
+
 /// `turtle.pose`, as turtlesim publishes it on Jazzy.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ros2", derive(aimdb_data_contracts::RosMessage))]
@@ -256,6 +287,9 @@ schema! {
     RouteProposal => "leash.route_proposal" @ 1,
     RouteDecision => "leash.route_decision" @ 1,
     Status => "leash.delivery_status" @ 1,
+    ButtonPress => "leash.button_press" @ 1,
+    BoardDiag => "leash.board_diag" @ 1,
+    LinkHealth => "leash.link_health" @ 1,
 }
 
 // With `ros2` the derive supplies these, named by their ROS type, so a type's
@@ -273,7 +307,11 @@ impl SchemaType for Twist {
 // The same `NAME@VERSION` always has the same wire shape: `cargo test` checks
 // these against `aimdb.lock`, and a changed shape needs a `VERSION` bump.
 aimdb_data_contracts::catalog! {
-    contracts: [Mission, WorldMap, Policy, RouteProposal, RouteDecision, Status, Pose, Twist],
+    contracts: [
+        Mission, WorldMap, Policy, RouteProposal, RouteDecision, Status, ButtonPress, BoardDiag,
+        LinkHealth,
+        Pose, Twist,
+    ],
     helpers: [Mode, Reason, State],
 }
 
