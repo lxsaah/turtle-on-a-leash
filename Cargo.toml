@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["contracts", "leash"]
+members = ["contracts", "gateway", "leash"]
 # Built for the MCU target with its own Embassy patches.
 exclude = ["firmware"]
 
@@ -13,7 +13,12 @@ publish = false
 [workspace.dependencies]
 # Pinned to a revision of main: the board publishes world.map before the
 # gateway connects, so this needs the late-join snapshots that follow v3.0.0.
+aimdb-core = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["std"] }
 aimdb-data-contracts = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", default-features = false }
+aimdb-serial-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["std"] }
+aimdb-tokio-adapter = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["tokio-runtime"] }
+aimdb-uds-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b" }
+aimdb-zenoh-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["std"] }
 contracts = { path = "contracts" }
 micromath = "2.1"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
