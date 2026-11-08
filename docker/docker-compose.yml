@@ -1,0 +1,20 @@
+# The Zenoh router and turtlesim. The gateway runs on the host, because Docker
+# Desktop cannot pass the board's USB device through.
+#
+# Ports bind to loopback only: the viewer has no password.
+name: turtle-on-a-leash
+
+services:
+  router:
+    build: .
+    image: turtle-on-a-leash:jazzy
+    command: ros2 run rmw_zenoh_cpp rmw_zenohd
+    ports:
+      - "127.0.0.1:7447:7447"
+      - "127.0.0.1:6080:6080"
+  turtlesim:
+    image: turtle-on-a-leash:jazzy
+    depends_on: [router]
+    # Shares the router's network, so rmw_zenoh's default localhost:7447 works.
+    network_mode: service:router
+    command: /start-turtlesim.sh
