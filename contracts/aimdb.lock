@@ -1,0 +1,42 @@
+# aimdb.lock: generated, do not edit. AIMDB_UPDATE_LOCK=1 cargo test to update.
+version = 1
+
+[[contract]]
+name = "geometry_msgs/msg/Twist"
+version = 1
+shape = "sha256:b188208979d84721a7223822d07f90cf47b88c713cf2574a36e9796a4bd8509e"
+
+[[contract]]
+name = "leash.delivery_status"
+version = 1
+shape = "sha256:a399c06755228736e7ddbd11264b3775ca50c200f0e9ea283c4d0916c5cd1d9f"
+
+[[contract]]
+name = "leash.mission"
+version = 1
+shape = "sha256:8accf0296d190c0445265ae392a7dc6dde9ce7c2cdabea474bf1f34522390024"
+
+[[contract]]
+name = "leash.motion_policy"
+version = 1
+shape = "sha256:8ef53b3b1cfd8712501680080cc006e7fcd870efb1b322f9b1577066b5d6f7fe"
+
+[[contract]]
+name = "leash.route_decision"
+version = 1
+shape = "sha256:320e16c68dd3f22bc72dc7591612468e485ce342de6562d3eb9aa9169b40e9c9"
+
+[[contract]]
+name = "leash.route_proposal"
+version = 1
+shape = "sha256:1514b1f778b715e680017ab0cd7b6cc210782a73a13ac0f2f6c0e36439bef344"
+
+[[contract]]
+name = "leash.world_map"
+version = 1
+shape = "sha256:2e1f5974960ac57def4054760d73e645646f7ba39a77f0055f1ccecc0df930a0"
+
+[[contract]]
+name = "turtlesim/msg/Pose"
+version = 1
+shape = "sha256:0662811c36eb1ac1e849f5e90a070fe94ef5d183b0c26487543e264eefa1ec6c"

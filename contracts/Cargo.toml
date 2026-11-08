@@ -1,0 +1,25 @@
+[package]
+name = "contracts"
+version = "0.1.0"
+description = "Record shapes and keys shared by the board and the gateway"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# `Linkable` impls, for records carried over serial links.
+linkable = ["aimdb-data-contracts/linkable", "aimdb-data-contracts/linkable-json", "dep:serde_json"]
+# ROS 2 identity on `Pose` and `Twist`. Gateway only.
+ros2 = ["aimdb-data-contracts/ros2", "aimdb-data-contracts/std"]
+
+[dependencies]
+aimdb-data-contracts.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Checks `aimdb.lock` in this crate's tests; never reaches a firmware build.
+aimdb-data-contracts = { workspace = true, features = ["lock"] }
+serde_json = { version = "1", features = ["std"] }
