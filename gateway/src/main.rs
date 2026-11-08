@@ -1,6 +1,7 @@
 //! Bridges ROS 2 and the board, and serves records to two local sockets:
 //! the agent's, which can write only route proposals, and the setup path's,
-//! which can write only missions.
+//! which can write only missions. It also serves the viewer and a read-only
+//! feed for it, on loopback.
 //!
 //! Start it with `run.sh`, which resets the board first. A board that outlives
 //! its gateway refuses the next one's subscriptions, so the records mirrored
@@ -19,7 +20,11 @@ use aimdb_data_contracts::{LinkCodecRegistrarExt, LinkableRegistrarExt};
 use aimdb_serial_connector::SerialClient;
 use aimdb_tokio_adapter::{TokioAdapter, TokioRecordRegistrarExt};
 use aimdb_uds_connector::UdsServer;
+use aimdb_websocket_connector::WebSocketConnector;
 use aimdb_zenoh_connector::{Ros2Connector, Ros2Node};
+use axum::Router;
+use axum::response::Html;
+use axum::routing::get;
 use contracts::{
     BoardDiag, ButtonPress, LinkHealth, Mission, Policy, Pose, RouteDecision, RouteProposal,
     Status, Twist, WorldMap, keys,
@@ -32,6 +37,7 @@ const BOARD_STALE: Duration = Duration::from_millis(1500);
 const HEALTH_PERIOD: Duration = Duration::from_millis(250);
 const POSE_TOPIC: &str = "ros2://turtle1/pose";
 const CMD_VEL_TOPIC: &str = "ros2://turtle1/cmd_vel";
+const VIEWER_PAGE: &str = include_str!("../../viewer/index.html");
 
 fn setting(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.into())
@@ -39,6 +45,11 @@ fn setting(name: &str, default: &str) -> String {
 
 fn serial_link(key: &str) -> String {
     format!("serial://{key}")
+}
+
+/// Viewer feed. Nothing links from `ws://`, so browsers can only read.
+fn viewer_link(key: &str) -> String {
+    format!("ws://{key}")
 }
 
 fn local_socket(path: &str, writable: &str) -> UdsServer {
@@ -88,6 +99,7 @@ async fn main() {
     let agent_socket = setting("AIMX_SOCKET", "/tmp/aimdb-turtle.sock");
     let admin_socket = setting("AIMX_ADMIN_SOCKET", "/tmp/aimdb-turtle-admin.sock");
     let port = env::var("SERIAL_PORT").expect("set SERIAL_PORT, e.g. /dev/cu.usbmodem14503");
+    let viewer_addr = setting("VIEWER_ADDR", "127.0.0.1:8080");
     let baud: u32 = setting("SERIAL_BAUD", "921600")
         .parse()
         .expect("SERIAL_BAUD");
@@ -104,40 +116,55 @@ async fn main() {
         .with_connector(ros2)
         .with_connector(local_socket(&agent_socket, keys::ROUTE_PROPOSAL))
         .with_connector(local_socket(&admin_socket, keys::MISSION).scheme("aimx-admin"))
-        .with_connector(SerialClient::over_port(port.as_str(), baud));
+        .with_connector(SerialClient::over_port(port.as_str(), baud))
+        .with_connector(
+            WebSocketConnector::new()
+                .bind(viewer_addr.as_str())
+                .path("/ws")
+                .with_late_join(true)
+                .with_additional_routes(
+                    Router::new().route("/", get(|| async { Html(VIEWER_PAGE) })),
+                ),
+        );
 
     // Written here, forwarded to the board.
     builder.configure::<RouteProposal>(keys::ROUTE_PROPOSAL, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .linked_to(&serial_link(keys::ROUTE_PROPOSAL));
+            .linked_to(&serial_link(keys::ROUTE_PROPOSAL))
+            .linked_to(&viewer_link(keys::ROUTE_PROPOSAL));
     });
     builder.configure::<Mission>(keys::MISSION, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .linked_to(&serial_link(keys::MISSION));
+            .linked_to(&serial_link(keys::MISSION))
+            .linked_to(&viewer_link(keys::MISSION));
     });
 
     // Produced by the board, mirrored here for readers.
     builder.configure::<WorldMap>(keys::WORLD_MAP, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .linked_from(&serial_link(keys::WORLD_MAP));
+            .linked_from(&serial_link(keys::WORLD_MAP))
+            .linked_to(&viewer_link(keys::WORLD_MAP));
     });
     builder.configure::<Policy>(keys::POLICY, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .linked_from(&serial_link(keys::POLICY));
+            .linked_from(&serial_link(keys::POLICY))
+            .linked_to(&viewer_link(keys::POLICY));
     });
     builder.configure::<RouteDecision>(keys::ROUTE_DECISION, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .linked_from(&serial_link(keys::ROUTE_DECISION));
+            .linked_from(&serial_link(keys::ROUTE_DECISION))
+            .linked_to(&viewer_link(keys::ROUTE_DECISION));
     });
     builder.configure::<Status>(keys::STATUS, |r| {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
-            .linked_from(&serial_link(keys::STATUS));
+            .linked_from(&serial_link(keys::STATUS))
+            .linked_to(&viewer_link(keys::STATUS));
     });
     builder.configure::<ButtonPress>(keys::BUTTON, |r| {
         r.buffer(BufferCfg::SingleLatest)
@@ -157,7 +184,8 @@ async fn main() {
             .transform_join(|join| {
                 join.input::<BoardDiag>(keys::BOARD_DIAG)
                     .on_triggers(watch_board)
-            });
+            })
+            .linked_to(&viewer_link(keys::LINK_HEALTH));
     });
 
     // Pose and velocity are CDR toward ROS and JSON toward the board.
@@ -165,7 +193,8 @@ async fn main() {
         r.buffer(BufferCfg::SingleLatest)
             .with_remote_access()
             .linked_from(POSE_TOPIC)
-            .linked_to_with(&serial_link(keys::POSE), Json);
+            .linked_to_with(&serial_link(keys::POSE), Json)
+            .linked_to_with(&viewer_link(keys::POSE), Json);
     });
     builder.configure::<Twist>(keys::CMD_VEL, |r| {
         r.buffer(BufferCfg::SingleLatest)
@@ -178,5 +207,6 @@ async fn main() {
 
     println!("gateway: router {router}, board {port}@{baud}");
     println!("gateway: agent unix://{agent_socket}, admin unix://{admin_socket}");
+    println!("gateway: viewer http://{viewer_addr}/");
     runner.run().await;
 }

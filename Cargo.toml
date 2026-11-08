@@ -18,6 +18,7 @@ aimdb-data-contracts = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04
 aimdb-serial-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["std"] }
 aimdb-tokio-adapter = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["tokio-runtime"] }
 aimdb-uds-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b" }
+aimdb-websocket-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b" }
 aimdb-zenoh-connector = { git = "https://github.com/aimdb-dev/aimdb", rev = "3d04efb10b3e2b5a835fade6cc9f6c2a6bfa864b", features = ["std"] }
 contracts = { path = "contracts" }
 micromath = "2.1"
