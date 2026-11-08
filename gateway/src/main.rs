@@ -10,9 +10,10 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aimdb_core::AimDbBuilder;
 use aimdb_core::buffer::BufferCfg;
 use aimdb_core::remote::{AimxConfig, SecurityPolicy};
+use aimdb_core::transform::JoinEventRx;
+use aimdb_core::{AimDbBuilder, Producer};
 use aimdb_data_contracts::link_codecs::Json;
 use aimdb_data_contracts::{LinkCodecRegistrarExt, LinkableRegistrarExt};
 use aimdb_serial_connector::SerialClient;
@@ -23,7 +24,7 @@ use contracts::{
     BoardDiag, ButtonPress, LinkHealth, Mission, Policy, Pose, RouteDecision, RouteProposal,
     Status, Twist, WorldMap, keys,
 };
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, timeout};
 
 /// Exit status `run.sh` restarts on: mirrors do not survive a board reset.
 const EXIT_BOARD_LOST: i32 = 3;
@@ -47,6 +48,38 @@ fn local_socket(path: &str, writable: &str) -> UdsServer {
             .socket_path(path)
             .security_policy(SecurityPolicy::read_write().with_writable_key(writable)),
     )
+}
+
+/// Turns `mcu.diag` into `link.health`, and exits when the board is lost. A
+/// join rather than a plain transform, because staleness is what happens when
+/// no input arrives, so this has to run on a timeout too.
+async fn watch_board(mut diags: JoinEventRx, health: Producer<LinkHealth>) {
+    let mut last_seen = Instant::now();
+    let mut board_uptime_ms = None;
+    loop {
+        match timeout(HEALTH_PERIOD, diags.recv()).await {
+            Ok(Ok(trigger)) => {
+                if let Some(diag) = trigger.as_input::<BoardDiag>() {
+                    last_seen = Instant::now();
+                    board_uptime_ms = Some(diag.uptime_ms);
+                }
+            }
+            Ok(Err(_)) => return,
+            Err(_) => {}
+        }
+        let age = last_seen.elapsed();
+        let board_fresh = age < BOARD_STALE;
+        health.produce(LinkHealth {
+            board_fresh,
+            ms_since_board: age.as_millis() as u64,
+            board_uptime_ms: board_uptime_ms.unwrap_or(0),
+        });
+        // A board never seen is not a board lost: keep waiting for it.
+        if !board_fresh && board_uptime_ms.is_some() {
+            eprintln!("gateway: no data from the board for {age:?}, exiting");
+            std::process::exit(EXIT_BOARD_LOST);
+        }
+    }
 }
 
 #[tokio::main]
@@ -119,8 +152,14 @@ async fn main() {
 
     // The gateway's own view of the board.
     builder.configure::<LinkHealth>(keys::LINK_HEALTH, |r| {
-        r.buffer(BufferCfg::SingleLatest).with_remote_access();
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .transform_join(|join| {
+                join.input::<BoardDiag>(keys::BOARD_DIAG)
+                    .on_triggers(watch_board)
+            });
     });
+
     // Pose and velocity are CDR toward ROS and JSON toward the board.
     builder.configure::<Pose>(keys::POSE, |r| {
         r.buffer(BufferCfg::SingleLatest)
@@ -135,38 +174,7 @@ async fn main() {
             .linked_to(CMD_VEL_TOPIC);
     });
 
-    let (db, runner) = builder.build().await.expect("build");
-
-    let mut diag = db.subscribe::<BoardDiag>(keys::BOARD_DIAG).expect("diag");
-    let health = db
-        .producer::<LinkHealth>(keys::LINK_HEALTH)
-        .expect("health");
-    tokio::spawn(async move {
-        let mut last_seen = Instant::now();
-        let mut board_uptime_ms = None;
-        loop {
-            match timeout(HEALTH_PERIOD, diag.recv()).await {
-                Ok(Ok(sample)) => {
-                    last_seen = Instant::now();
-                    board_uptime_ms = Some(sample.value.uptime_ms);
-                }
-                Ok(Err(_)) => sleep(HEALTH_PERIOD).await,
-                Err(_) => {}
-            }
-            let age = last_seen.elapsed();
-            let board_fresh = age < BOARD_STALE;
-            health.produce(LinkHealth {
-                board_fresh,
-                ms_since_board: age.as_millis() as u64,
-                board_uptime_ms: board_uptime_ms.unwrap_or(0),
-            });
-            // A board never seen is not a board lost: keep waiting for it.
-            if !board_fresh && board_uptime_ms.is_some() {
-                eprintln!("gateway: no data from the board for {age:?}, exiting");
-                std::process::exit(EXIT_BOARD_LOST);
-            }
-        }
-    });
+    let (_db, runner) = builder.build().await.expect("build");
 
     println!("gateway: router {router}, board {port}@{baud}");
     println!("gateway: agent unix://{agent_socket}, admin unix://{admin_socket}");
