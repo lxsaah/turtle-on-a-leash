@@ -73,36 +73,51 @@ async fn main() {
         .with_connector(local_socket(&admin_socket, keys::MISSION).scheme("aimx-admin"))
         .with_connector(SerialClient::over_port(port.as_str(), baud));
 
-    macro_rules! to_board {
-        ($($ty:ty => $key:expr),+ $(,)?) => {$(
-            builder.configure::<$ty>($key, |r| {
-                r.buffer(BufferCfg::SingleLatest)
-                    .with_remote_access()
-                    .linked_to(&serial_link($key));
-            });
-        )+};
-    }
-    macro_rules! from_board {
-        ($($ty:ty => $key:expr),+ $(,)?) => {$(
-            builder.configure::<$ty>($key, |r| {
-                r.buffer(BufferCfg::SingleLatest)
-                    .with_remote_access()
-                    .linked_from(&serial_link($key));
-            });
-        )+};
-    }
-    to_board! {
-        RouteProposal => keys::ROUTE_PROPOSAL,
-        Mission => keys::MISSION,
-    }
-    from_board! {
-        WorldMap => keys::WORLD_MAP,
-        Policy => keys::POLICY,
-        RouteDecision => keys::ROUTE_DECISION,
-        Status => keys::STATUS,
-        ButtonPress => keys::BUTTON,
-        BoardDiag => keys::BOARD_DIAG,
-    }
+    // Written here, forwarded to the board.
+    builder.configure::<RouteProposal>(keys::ROUTE_PROPOSAL, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_to(&serial_link(keys::ROUTE_PROPOSAL));
+    });
+    builder.configure::<Mission>(keys::MISSION, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_to(&serial_link(keys::MISSION));
+    });
+
+    // Produced by the board, mirrored here for readers.
+    builder.configure::<WorldMap>(keys::WORLD_MAP, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_from(&serial_link(keys::WORLD_MAP));
+    });
+    builder.configure::<Policy>(keys::POLICY, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_from(&serial_link(keys::POLICY));
+    });
+    builder.configure::<RouteDecision>(keys::ROUTE_DECISION, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_from(&serial_link(keys::ROUTE_DECISION));
+    });
+    builder.configure::<Status>(keys::STATUS, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_from(&serial_link(keys::STATUS));
+    });
+    builder.configure::<ButtonPress>(keys::BUTTON, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_from(&serial_link(keys::BUTTON));
+    });
+    builder.configure::<BoardDiag>(keys::BOARD_DIAG, |r| {
+        r.buffer(BufferCfg::SingleLatest)
+            .with_remote_access()
+            .linked_from(&serial_link(keys::BOARD_DIAG));
+    });
+
+    // The gateway's own view of the board.
     builder.configure::<LinkHealth>(keys::LINK_HEALTH, |r| {
         r.buffer(BufferCfg::SingleLatest).with_remote_access();
     });

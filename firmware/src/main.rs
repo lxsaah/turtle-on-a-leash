@@ -153,25 +153,43 @@ async fn main(spawner: Spawner) {
 
     // Four subscriber slots: the leash task, the gateway's mirror, and room
     // for remote readers.
-    macro_rules! latest {
-        ($($ty:ty => $key:expr),+ $(,)?) => {$(
-            builder.configure::<$ty>($key, |reg| {
-                reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
-                    .with_remote_access();
-            });
-        )+};
-    }
-    latest! {
-        Pose => keys::POSE,
-        Twist => keys::CMD_VEL,
-        Mission => keys::MISSION,
-        WorldMap => keys::WORLD_MAP,
-        Policy => keys::POLICY,
-        RouteProposal => keys::ROUTE_PROPOSAL,
-        RouteDecision => keys::ROUTE_DECISION,
-        Status => keys::STATUS,
-        BoardDiag => keys::BOARD_DIAG,
-    }
+    builder.configure::<Pose>(keys::POSE, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<Twist>(keys::CMD_VEL, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<Mission>(keys::MISSION, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<WorldMap>(keys::WORLD_MAP, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<Policy>(keys::POLICY, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<RouteProposal>(keys::ROUTE_PROPOSAL, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<RouteDecision>(keys::ROUTE_DECISION, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<Status>(keys::STATUS, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+    builder.configure::<BoardDiag>(keys::BOARD_DIAG, |reg| {
+        reg.buffer_sized::<1, 4>(EmbassyBufferType::SingleLatest)
+            .with_remote_access();
+    });
+
     // A ring, so that no press is lost. Having a source also makes AimDB refuse
     // remote writes to this record, whatever the policy says.
     builder.configure::<ButtonPress>(keys::BUTTON, |reg| {
